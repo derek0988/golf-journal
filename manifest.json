@@ -1,9 +1,0 @@
-{
-  "name": "Golf Journal",
-  "short_name": "Golf Journal",
-  "start_url": "/",
-  "display": "standalone",
-  "background_color": "#16342B",
-  "theme_color": "#16342B",
-  "icons": []
-}
