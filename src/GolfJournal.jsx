@@ -12,7 +12,9 @@ import {
   ClipboardList,
   MapPin,
   X,
+  LogOut,
 } from "lucide-react";
+import { supabase } from "./supabaseClient";
 
 const FONT_IMPORT = `@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=IBM+Plex+Mono:wght@500;600&family=Inter:wght@400;500;600&display=swap');`;
 
@@ -130,8 +132,16 @@ function migrateRound(round) {
   return { ...round, holes: round.holes.map(migrateHole) };
 }
 
+// Real UUIDs for anything that becomes a database row id (rounds, courses).
+// Nested ids (tees, holes, shots) live inside jsonb columns and don't need
+// to be valid UUIDs, so they keep their old lightweight format.
+function newId() {
+  if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID();
+  return "id-" + Date.now() + "-" + Math.random().toString(36).slice(2, 10);
+}
+
 const newRoundTemplate = () => ({
-  id: `round_${Date.now()}`,
+  id: newId(),
   date: new Date().toISOString().slice(0, 10),
   course: "",
   notes: "",
@@ -149,7 +159,7 @@ const emptyTee = (name = "White") => ({
 });
 
 const newCourseTemplate = () => ({
-  id: `course_${Date.now()}`,
+  id: newId(),
   name: "",
   tees: [emptyTee("White")],
   handicaps: Array.from({ length: 18 }, (_, i) => i + 1),
@@ -1198,7 +1208,93 @@ function RoundStub({ round, onOpen, onDelete }) {
   );
 }
 
+function AuthScreen() {
+  const [mode, setMode] = useState("signin"); // signin | signup | reset
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState(null);
+  const [info, setInfo] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setError(null);
+    setInfo(null);
+    setBusy(true);
+    try {
+      if (mode === "signup") {
+        const { error: err } = await supabase.auth.signUp({ email, password });
+        if (err) throw err;
+        setInfo("Check your email to confirm your account, then sign in.");
+        setMode("signin");
+      } else if (mode === "reset") {
+        const { error: err } = await supabase.auth.resetPasswordForEmail(email);
+        if (err) throw err;
+        setInfo("Password reset email sent — check your inbox.");
+      } else {
+        const { error: err } = await supabase.auth.signInWithPassword({ email, password });
+        if (err) throw err;
+      }
+    } catch (err) {
+      setError(err.message || "Something went wrong.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="app">
+      <style>{`
+        ${FONT_IMPORT}
+        * { box-sizing: border-box; }
+        .app { min-height: 100vh; background: ${COLORS.fairway}; display: flex; align-items: center; justify-content: center; padding: 24px; font-family: 'Inter', sans-serif; }
+        .auth-card { background: ${COLORS.scorecard}; border-radius: 10px; padding: 28px 24px; width: 100%; max-width: 360px; box-shadow: 0 10px 30px rgba(0,0,0,0.4); }
+        .auth-title { font-family: 'Fraunces', serif; font-weight: 700; font-size: 24px; color: ${COLORS.ink}; display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+        .auth-sub { font-size: 13px; color: ${COLORS.ink}99; margin: 0 0 20px; }
+        .auth-input { width: 100%; background: ${COLORS.scorecardDark}; border: none; border-radius: 6px; padding: 12px 14px; font-size: 14px; color: ${COLORS.ink}; margin-bottom: 12px; }
+        .auth-submit { width: 100%; background: ${COLORS.turf}; color: ${COLORS.scorecard}; border: none; border-radius: 6px; padding: 13px; font-weight: 600; font-size: 14px; cursor: pointer; margin-bottom: 14px; }
+        .auth-submit:hover { background: ${COLORS.turfLight}; }
+        .auth-submit:disabled { opacity: 0.6; cursor: not-allowed; }
+        .auth-switch { text-align: center; font-size: 13px; color: ${COLORS.ink}99; }
+        .auth-switch button { background: none; border: none; color: ${COLORS.turf}; font-weight: 600; cursor: pointer; padding: 0; }
+        .auth-error { background: ${COLORS.flag}15; border: 1px solid ${COLORS.flag}55; color: ${COLORS.flag}; font-size: 13px; padding: 8px 10px; border-radius: 6px; margin-bottom: 12px; }
+        .auth-info { background: ${COLORS.turf}15; border: 1px solid ${COLORS.turf}55; color: ${COLORS.turf}; font-size: 13px; padding: 8px 10px; border-radius: 6px; margin-bottom: 12px; }
+      `}</style>
+      <div className="auth-card">
+        <div className="auth-title"><Flag size={22} /> Golf Journal</div>
+        <p className="auth-sub">
+          {mode === "signup" ? "Create an account to save your bag and rounds." : mode === "reset" ? "Enter your email to reset your password." : "Sign in to access your bag and rounds."}
+        </p>
+        {error && <div className="auth-error">{error}</div>}
+        {info && <div className="auth-info">{info}</div>}
+        <form onSubmit={submit}>
+          <input className="auth-input" type="email" placeholder="Email" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
+          {mode !== "reset" && (
+            <input className="auth-input" type="password" placeholder="Password" autoComplete={mode === "signup" ? "new-password" : "current-password"} value={password} onChange={(e) => setPassword(e.target.value)} required minLength={6} />
+          )}
+          <button className="auth-submit" type="submit" disabled={busy}>
+            {busy ? "Please wait..." : mode === "signup" ? "Sign up" : mode === "reset" ? "Send reset email" : "Sign in"}
+          </button>
+        </form>
+        {mode === "signin" && (
+          <div className="auth-switch">
+            No account? <button onClick={() => { setMode("signup"); setError(null); setInfo(null); }}>Sign up</button>
+            {" · "}
+            <button onClick={() => { setMode("reset"); setError(null); setInfo(null); }}>Forgot password?</button>
+          </div>
+        )}
+        {mode !== "signin" && (
+          <div className="auth-switch">
+            <button onClick={() => { setMode("signin"); setError(null); setInfo(null); }}>Back to sign in</button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function GolfJournal() {
+  const [session, setSession] = useState(undefined); // undefined = loading, null = logged out
   const [rounds, setRounds] = useState(null);
   const [courses, setCourses] = useState(null);
   const [bag, setBag] = useState(DEFAULT_BAG);
@@ -1210,57 +1306,65 @@ export default function GolfJournal() {
   const [error, setError] = useState(null);
   const [showEndPrompt, setShowEndPrompt] = useState(false);
 
+  // Track the signed-in session, and reload it whenever auth state changes
+  // (sign in, sign out, token refresh).
   useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => setSession(data.session));
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, s) => setSession(s));
+    return () => listener.subscription.unsubscribe();
+  }, []);
+
+  const userId = session?.user?.id;
+
+  // Load rounds, the shared course library, and this user's bag once signed in.
+  useEffect(() => {
+    if (!userId) return;
     (async () => {
       try {
-        const res = await window.storage.get("rounds-index", false);
-        const list = res ? JSON.parse(res.value) : [];
-        setRounds(list);
+        const { data, error: err } = await supabase
+          .from("rounds")
+          .select("*")
+          .eq("user_id", userId)
+          .order("date", { ascending: false });
+        if (err) throw err;
+        setRounds((data || []).map((r) => ({ id: r.id, date: r.date, course: r.course_name, courseId: r.course_id, holes: r.holes })));
       } catch (e) {
+        console.error("load rounds failed:", e);
         setRounds([]);
+        setError(`Couldn't load rounds: ${e.message || "unknown error"}`);
       }
+
       try {
-        const res = await window.storage.get("courses-index", false);
-        const list = res ? JSON.parse(res.value) : [];
-        setCourses(list);
+        const { data, error: err } = await supabase.from("courses").select("*").order("name");
+        if (err) throw err;
+        setCourses((data || []).map((c) => ({ id: c.id, name: c.name, tees: c.tees, handicaps: c.handicaps, createdBy: c.created_by })));
       } catch (e) {
+        console.error("load courses failed:", e);
         setCourses([]);
+        setError(`Couldn't load courses: ${e.message || "unknown error"}`);
       }
+
       try {
-        const res = await window.storage.get("golf-bag", false);
-        const saved = res ? JSON.parse(res.value) : DEFAULT_BAG;
+        const { data, error: err } = await supabase.from("bags").select("clubs").eq("user_id", userId).maybeSingle();
+        if (err) throw err;
+        const saved = data?.clubs && data.clubs.length ? data.clubs : DEFAULT_BAG;
         setBag(saved);
         setEditingBag(saved);
       } catch (e) {
-        // keep default bag
+        console.error("load bag failed:", e);
+        // fall back to the default bag silently — not worth blocking the app over
       }
     })();
-  }, []);
+  }, [userId]);
 
   const saveBag = async () => {
     try {
-      await window.storage.set("golf-bag", JSON.stringify(editingBag), false);
+      const { error: err } = await supabase.from("bags").upsert({ user_id: userId, clubs: editingBag, updated_at: new Date().toISOString() });
+      if (err) throw err;
       setBag(editingBag);
       setView("list");
     } catch (e) {
-      setError("Couldn't save your bag — try again.");
-    }
-  };
-
-  const persistIndex = async (list) => {
-    try {
-      await window.storage.set("rounds-index", JSON.stringify(list), false);
-    } catch (e) {
-      setError("Couldn't save — try again.");
-    }
-  };
-
-  const persistCoursesIndex = async (list) => {
-    try {
-      await window.storage.set("courses-index", JSON.stringify(list), false);
-    } catch (e) {
-      console.error("persistCoursesIndex failed:", e);
-      setError(`Couldn't save — ${e && e.message ? e.message : "unknown error"}`);
+      setError(`Couldn't save your bag: ${e.message || "unknown error"}`);
     }
   };
 
@@ -1269,43 +1373,53 @@ export default function GolfJournal() {
     setView("course-editor");
   };
 
-  const openCourse = async (id) => {
-    try {
-      const res = await window.storage.get(`course:${id}`, false);
-      if (res) {
-        setEditingCourse(JSON.parse(res.value));
-        setView("course-editor");
-      }
-    } catch (e) {
-      setError("Couldn't load that course.");
+  const openCourse = (id) => {
+    const c = (courses || []).find((c) => c.id === id);
+    if (c) {
+      setEditingCourse(c);
+      setView("course-editor");
     }
   };
 
   const saveCourse = async () => {
     try {
-      await window.storage.set(`course:${editingCourse.id}`, JSON.stringify(editingCourse), false);
-      const summary = editingCourse;
-      const rest = (courses || []).filter((c) => c.id !== editingCourse.id);
-      const updated = [...rest, summary].sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+      const row = {
+        id: editingCourse.id,
+        name: editingCourse.name,
+        tees: editingCourse.tees,
+        handicaps: editingCourse.handicaps,
+        created_by: userId,
+      };
+      const { data, error: err } = await supabase.from("courses").upsert(row).select();
+      if (err) throw err;
+      if (!data || data.length === 0) {
+        // RLS silently blocks edits to a course you don't own — no thrown
+        // error, just no row returned.
+        setError("Only the person who added this course can edit it.");
+        return;
+      }
+      const saved = { id: data[0].id, name: data[0].name, tees: data[0].tees, handicaps: data[0].handicaps, createdBy: data[0].created_by };
+      const rest = (courses || []).filter((c) => c.id !== saved.id);
+      const updated = [...rest, saved].sort((a, b) => (a.name || "").localeCompare(b.name || ""));
       setCourses(updated);
-      await persistCoursesIndex(updated);
       setView("courses-list");
       setEditingCourse(null);
     } catch (e) {
       console.error("saveCourse failed:", e);
-      setError(`Couldn't save this course: ${e && e.message ? e.message : "unknown error"}`);
+      setError(`Couldn't save this course: ${e.message || "unknown error"}`);
     }
   };
 
   const deleteCourse = async (id) => {
     try {
-      await window.storage.delete(`course:${id}`, false);
+      const { error: err } = await supabase.from("courses").delete().eq("id", id);
+      if (err) throw err;
     } catch (e) {
-      // ignore missing key
+      setError(`Couldn't delete this course: ${e.message || "unknown error"}`);
+      return;
     }
     const updated = (courses || []).filter((c) => c.id !== id);
     setCourses(updated);
-    await persistCoursesIndex(updated);
     if (view === "course-editor") {
       setView("courses-list");
       setEditingCourse(null);
@@ -1317,16 +1431,12 @@ export default function GolfJournal() {
     setView("setup");
   };
 
-  const openRound = async (id) => {
-    try {
-      const res = await window.storage.get(`round:${id}`, false);
-      if (res) {
-        setEditing(migrateRound(JSON.parse(res.value)));
-        setHoleIndex(0);
-        setView("review");
-      }
-    } catch (e) {
-      setError("Couldn't load that round.");
+  const openRound = (id) => {
+    const r = (rounds || []).find((r) => r.id === id);
+    if (r) {
+      setEditing(migrateRound({ id: r.id, date: r.date, course: r.course, courseId: r.courseId, notes: r.notes, holes: r.holes }));
+      setHoleIndex(0);
+      setView("review");
     }
   };
 
@@ -1339,28 +1449,41 @@ export default function GolfJournal() {
 
   const saveRound = async () => {
     try {
-      await window.storage.set(`round:${editing.id}`, JSON.stringify(editing), false);
-      const summary = { id: editing.id, date: editing.date, course: editing.course, holes: editing.holes };
-      const rest = (rounds || []).filter((r) => r.id !== editing.id);
+      const row = {
+        id: editing.id,
+        user_id: userId,
+        course_id: editing.courseId || null,
+        course_name: editing.course,
+        date: editing.date,
+        notes: editing.notes,
+        holes: editing.holes,
+        updated_at: new Date().toISOString(),
+      };
+      const { data, error: err } = await supabase.from("rounds").upsert(row).select();
+      if (err) throw err;
+      const saved = data[0];
+      const summary = { id: saved.id, date: saved.date, course: saved.course_name, courseId: saved.course_id, holes: saved.holes };
+      const rest = (rounds || []).filter((r) => r.id !== saved.id);
       const updated = [summary, ...rest].sort((a, b) => (a.date < b.date ? 1 : -1));
       setRounds(updated);
-      await persistIndex(updated);
       setView("list");
       setEditing(null);
     } catch (e) {
-      setError("Couldn't save this round — try again.");
+      console.error("saveRound failed:", e);
+      setError(`Couldn't save this round: ${e.message || "unknown error"}`);
     }
   };
 
   const deleteRound = async (id) => {
     try {
-      await window.storage.delete(`round:${id}`, false);
+      const { error: err } = await supabase.from("rounds").delete().eq("id", id);
+      if (err) throw err;
     } catch (e) {
-      // ignore missing key
+      setError(`Couldn't delete this round: ${e.message || "unknown error"}`);
+      return;
     }
     const updated = (rounds || []).filter((r) => r.id !== id);
     setRounds(updated);
-    await persistIndex(updated);
   };
 
   const handleSaveAndEndRound = async () => {
@@ -1373,6 +1496,18 @@ export default function GolfJournal() {
     setShowEndPrompt(false);
     setView("list");
   };
+
+  if (session === undefined) {
+    return (
+      <div className="app" style={{ minHeight: "100vh", background: COLORS.fairway, display: "flex", alignItems: "center", justifyContent: "center", color: COLORS.scorecard, fontFamily: "'Inter', sans-serif" }}>
+        Loading...
+      </div>
+    );
+  }
+
+  if (session === null) {
+    return <AuthScreen />;
+  }
 
   return (
     <div className="app">
@@ -1543,6 +1678,8 @@ export default function GolfJournal() {
         .save-btn:hover { background: ${COLORS.turfLight}; }
 
         .header-actions { display: flex; align-items: center; gap: 10px; }
+        .signout-btn { background: transparent; border: 1px solid ${COLORS.sand}44; color: ${COLORS.scorecard}99; border-radius: 999px; padding: 9px; display: flex; align-items: center; justify-content: center; cursor: pointer; }
+        .signout-btn:hover { border-color: ${COLORS.flag}; color: ${COLORS.flag}; }
         .courses-link-btn { background: transparent; border: 1px solid ${COLORS.sand}66; color: ${COLORS.scorecard}; border-radius: 999px; padding: 9px 14px; font-weight: 600; font-size: 13px; display: flex; align-items: center; gap: 5px; cursor: pointer; }
         .courses-link-btn:hover { border-color: ${COLORS.sand}; color: ${COLORS.sand}; }
 
@@ -1592,6 +1729,9 @@ export default function GolfJournal() {
               <button className="courses-link-btn" onClick={() => { setEditingBag(bag); setView("bag-editor"); }}>My Bag</button>
               <button className="courses-link-btn" onClick={() => setView("courses-list")}><MapPin size={15} /> Courses</button>
               <button className="new-btn" onClick={startNew}><Plus size={16} /> New round</button>
+              <button className="signout-btn" onClick={() => supabase.auth.signOut()} aria-label="Sign out" title={session.user.email}>
+                <LogOut size={16} />
+              </button>
             </div>
           </div>
           <div className="list-wrap">
